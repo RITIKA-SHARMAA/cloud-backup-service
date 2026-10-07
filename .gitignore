@@ -1,0 +1,6 @@
+/bin/
+/run/
+/vault/
+*.log
+*.out
+.env
