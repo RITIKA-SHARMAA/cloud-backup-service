@@ -1,0 +1,86 @@
+# In-cluster PostgreSQL and S3 for a local kind cluster. For demos and CI only: no persistence.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  init-db.sql: |
+    CREATE DATABASE cbs;
+    CREATE DATABASE shop;
+    CREATE DATABASE shop_restored;
+    \connect shop
+    CREATE TABLE customers (id int PRIMARY KEY, name text NOT NULL, email text NOT NULL, city text NOT NULL);
+    INSERT INTO customers SELECT g, 'Customer ' || g, 'user' || g || '@example.com',
+      (ARRAY['Bengaluru','Delhi','Mumbai','Pune','Chennai'])[1 + g % 5] FROM generate_series(1, 20000) g;
+    CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int NOT NULL REFERENCES customers (id),
+      amount_cents bigint NOT NULL, status text NOT NULL, created_at timestamptz NOT NULL, note text NOT NULL);
+    INSERT INTO orders SELECT g, 1 + (g::bigint * 7919) % 20000, (g::bigint * 104729) % 500000,
+      (ARRAY['paid','shipped','delivered','refunded'])[1 + g % 4], timestamptz '2026-01-01' + (g || ' seconds')::interval,
+      md5(g::text) FROM generate_series(1, 200000) g;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - { name: POSTGRES_PASSWORD, value: postgres }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-h", "localhost"] }
+            periodSeconds: 2
+          volumeMounts:
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+      volumes:
+        - name: init
+          configMap: { name: postgres-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: { app: postgres }
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: s3 }
+  template:
+    metadata:
+      labels: { app: s3 }
+    spec:
+      containers:
+        - name: moto
+          image: motoserver/moto:latest
+          ports:
+            - containerPort: 5000
+          readinessProbe:
+            tcpSocket: { port: 5000 }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+spec:
+  selector: { app: s3 }
+  ports:
+    - port: 5000

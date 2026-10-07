@@ -1,0 +1,54 @@
+# Local stack: PostgreSQL (catalog + a demo "shop" database), an S3 server with Object Lock,
+# the API, the scheduler and two workers.
+#   docker compose up -d --build
+#   ./scripts/demo.sh
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./deploy/compose/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      # -h localhost forces a TCP check, which only passes after the init script has finished.
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 2s
+      retries: 30
+
+  # moto implements the S3 API including versioning and Object Lock. On real AWS, leave
+  # CBS_S3_ENDPOINT empty and the same code talks to Amazon S3.
+  s3:
+    image: motoserver/moto:latest
+    ports: ["4566:5000"]
+
+  api:
+    build: .
+    command: ["api"]
+    restart: on-failure
+    env_file: deploy/compose/cbs.env
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      s3: { condition: service_started }
+
+  scheduler:
+    build: .
+    command: ["scheduler"]
+    restart: on-failure
+    env_file: deploy/compose/cbs.env
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  worker:
+    build: .
+    command: ["worker"]
+    restart: on-failure
+    env_file: deploy/compose/cbs.env
+    environment:
+      CBS_LEASE: 15s
+    deploy:
+      replicas: 2
+    depends_on:
+      postgres: { condition: service_healthy }
+      s3: { condition: service_started }

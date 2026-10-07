@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cloud-backup-service
+description: Encrypted, deduplicated backups into an S3 Object Lock vault (API, scheduler, workers)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

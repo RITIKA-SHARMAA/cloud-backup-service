@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cbs.name" . }}
+  labels: {{- include "cbs.labels" . | nindent 4 }}
+data:
+  CBS_DATABASE_URL: {{ .Values.config.databaseURL | quote }}
+  CBS_VAULT_URL: {{ .Values.config.vaultURL | quote }}
+  CBS_S3_ENDPOINT: {{ .Values.config.s3Endpoint | quote }}
+  CBS_RETENTION: {{ .Values.config.retention | quote }}
+  CBS_LOCK_MODE: {{ .Values.config.lockMode | quote }}
+  CBS_LEASE: {{ .Values.worker.lease | quote }}
+  AWS_REGION: {{ .Values.config.awsRegion | quote }}
+{{- if not .Values.secrets.existingSecret }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "cbs.name" . }}
+  labels: {{- include "cbs.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  CBS_ENCRYPTION_KEY: {{ .Values.secrets.encryptionKey | quote }}
+  AWS_ACCESS_KEY_ID: {{ .Values.secrets.awsAccessKeyID | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ .Values.secrets.awsSecretAccessKey | quote }}
+  {{- range $k, $v := .Values.secrets.extra }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}

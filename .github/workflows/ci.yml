@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet
+        run: go vet ./...
+      - name: go mod tidy is clean
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+  test:
+    name: unit + integration tests (race detector)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+    env:
+      CBS_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      CBS_TEST_S3_ENDPOINT: http://localhost:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start an S3 server with Object Lock support (moto)
+        run: |
+          pip install "moto[server]"
+          nohup moto_server -p 4566 > moto.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:4566 >/dev/null && break; sleep 1; done
+      - name: pg_dump version (must be >= server major version)
+        run: pg_dump --version
+      - name: Tests
+        run: go test -race -count=1 ./...
+      - name: Test count
+        run: go test -count=1 -v ./... 2>&1 | grep -c -- '^--- PASS' || true
+
+  compose:
+    name: docker compose end-to-end
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the stack
+        run: docker compose up -d --build --wait
+      - name: Demo (backup twice, restore, compare)
+        run: ./scripts/demo.sh
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color | tail -n 200
+
+  kind:
+    name: Kubernetes (kind + Helm) end-to-end
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint the chart
+        run: helm lint deploy/helm/cloud-backup-service
+      - name: Build the image
+        run: docker build -t cloud-backup-service:dev .
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: cbs
+      - name: Load the image and start PostgreSQL and S3 in the cluster
+        run: |
+          kind load docker-image cloud-backup-service:dev --name cbs
+          kubectl apply -f deploy/kind/dependencies.yaml
+          kubectl rollout status deploy/postgres deploy/s3 --timeout=180s
+      - name: Install the chart
+        run: helm install demo deploy/helm/cloud-backup-service --wait --timeout 5m
+      - name: Demo through the API
+        run: |
+          kubectl port-forward svc/demo-cbs-api 8080:8080 > /dev/null 2>&1 &
+          sleep 3
+          API=http://localhost:8080 PG_HOST=postgres:5432 \
+          PSQL="kubectl exec -i deploy/postgres -- psql -U postgres" ./scripts/demo.sh
+      - name: Pods and logs
+        if: always()
+        run: |
+          kubectl get pods -o wide
+          kubectl logs -l app.kubernetes.io/component=worker --tail=50 --prefix || true

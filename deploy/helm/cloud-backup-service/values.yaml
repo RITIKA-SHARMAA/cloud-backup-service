@@ -1,0 +1,48 @@
+image:
+  repository: cloud-backup-service
+  tag: dev
+  pullPolicy: IfNotPresent
+
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+scheduler:
+  # Safe to run more than one: schedulers coordinate through the database.
+  replicas: 1
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+worker:
+  replicas: 3
+  lease: 30s
+  # Must be longer than the worker's shutdown grace (20s) so a running job can finish or be
+  # released before Kubernetes sends SIGKILL.
+  terminationGracePeriodSeconds: 40
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+config:
+  databaseURL: postgres://postgres:postgres@postgres:5432/cbs?sslmode=disable
+  vaultURL: s3://cbs-vault
+  # Empty for real AWS S3; set for LocalStack/moto.
+  s3Endpoint: http://s3:5000
+  retention: 720h
+  lockMode: GOVERNANCE
+  awsRegion: us-east-1
+
+secrets:
+  # Use an existing Secret (recommended) with keys CBS_ENCRYPTION_KEY and optionally
+  # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / SHOP_DB_PASSWORD. On EKS, prefer IAM Roles for
+  # Service Accounts over static AWS keys.
+  existingSecret: ""
+  # Only used when existingSecret is empty. DEMO VALUES: never use them for real data.
+  encryptionKey: 6a1f3c9e8b2d4f70a5c6e1b3d9f2a8c47e0b5d3f1a9c6e2b8d4f7a0c3e5b1d92
+  awsAccessKeyID: test
+  awsSecretAccessKey: test
+  extra:
+    SHOP_DB_PASSWORD: postgres
